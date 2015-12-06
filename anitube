@@ -1,0 +1,229 @@
+#!/mingw64/bin/ruby
+# encoding: utf-8
+
+=begin
+=end
+
+require 'open-uri'
+require 'pp'
+require 'optparse'
+
+class Anitube
+  Version = '1.0.0'
+  Usage = [
+    "anitube [options] searchword [searchwords..]\n",
+    "anitube is listup get uris. if you want to get mpeg, add -g option."]
+  SearchUrl = 'http://www.anitube.se/search/?search_id='
+
+  def showUsage
+    puts "#{self.class.name} version #{Version}"
+    puts 'please type search words.'
+    puts "\tusage: anitube --help"
+  end
+
+  def initialize
+    if ARGV.length == 0 then
+      showUsage
+      exit 1
+    end
+    # 引数の解析
+    @args = {}
+    usage = String.new
+    Usage.each do |string|
+      usage << string
+    end
+    parser = OptionParser.new
+    parser.program_name=(self.class.name)
+    parser.version=(Version)
+    parser.banner=(usage)
+    parser.on('-g', '--get', 'get mpeg from showing urls.'){|v| @args[:get] = v}
+    parser.on('-v', '--verbose', 'show a log of executing.'){|v| @args[:verbose] = v}
+    parser.on('-y', '--noprompt', 'anser "yse" all prompts.'){|v| @args[:noprompt] = v}
+    parser.parse!(ARGV)
+    @words = ARGV.dup
+    @search_url = SearchUrl
+    STDOUT.sync=(true)
+  end
+
+  def run
+    set_search_url
+    if @args[:verbose] then
+      puts "connect to \"#{@search_url}\"..."
+    end
+    search = Array.new(1, {url: @search_url})
+    search += get_search_uri(@search_url, @words)
+    list = Array.new
+    search.each do |src|
+      if @args[:verbose] then
+        puts "search url is \"#{src[:url]}\""
+      end
+      list += make_list(src[:url], @words)
+    end
+    list.uniq!
+    mpeg_array = Array.new
+    list.each do |target|
+      mpeg_array += search_mpeg(target)
+    end
+    pp mpeg_array
+    unless @args[:get] then
+      exit 0
+    end
+
+    # get mpeg
+    mpeg_array.each do |target|
+      title = target[:title].gsub(/[:\s]+/, '-')
+      unless @args[:noprompt] then
+        print "Do you get a #{title} from #{target[:url]}? [y/n] "
+        input = STDIN.gets
+        unless /y/i =~ input then
+          puts "canceled."
+          next
+        end
+      end
+      get_mpeg({title: title, url: target[:url]})
+    end
+  end
+
+  def set_search_url
+    @search_url << ARGV.shift
+    ARGV.each do |search|
+      @search_url << '+'
+      @search_url << search
+    end
+  end
+
+  def get_search_uri(uri_str, argvs)
+    name = ['url']
+    search = get_hash_array(uri_str, %r|a\s+href="(http://.*/search/.*/\?sort=&.*)"|i, name) do |hash|
+      if match(hash[:url], argvs) then
+        true
+      else
+        false
+      end
+    end
+    search.uniq
+  end  
+
+  def make_list(uri_str, argvs)
+    name = ['url', 'title']
+    list = get_hash_array(uri_str, %r|<a\s+href="(http://.*?)">\s*(.*)\s*</a>|i, name) do |hash|
+      title = hash[:title]
+      if %r|<.*/>| !~ title and match(title, argvs) then
+        true
+      else
+        false
+      end
+    end
+    list
+  end
+
+  def search_mpeg(target_hash)
+    name = ['url']
+    config = get_hash_array(target_hash[:url], %r|"(http://.*?config.php.*?)"|i, name)
+    result_array = Array.new
+    config.each do |target|
+      if target[:url] then
+        if @args[:verbose] then
+          puts "#{target_hash[:title]} is #{target[:url]}."
+        end
+        html = open(target[:url]).read
+        src = String.new
+        html.each_line do |line|
+          if %r|(http://.*?\.mp4)|i =~ line then
+            tmp_src = $1
+            if src.empty? then
+              src = tmp_src
+            elsif /hd\.mp4/i =~ $1 then
+              src = tmp_src
+            end
+          end
+        end
+        message = "#{target_hash[:title]} was not found."
+        unless src.empty? then
+          ret_hash = {title: target_hash[:title], url: src}
+          result_array.push(ret_hash)
+          message = "#{target_hash[:title]} is #{src}."
+        end
+        if @args[:verbose] then
+          puts message
+        end
+      end
+    end
+    result_array
+  end
+
+  def get_mpeg(target)
+    filename = target[:title] + '.mp4'
+    path = target[:url]
+    puts "getting #{filename} from #{path}..."
+    open(filename, 'wb') do |output|
+      open(path) do |data|
+        size = data.size
+        p size
+        output.write(data.read)
+      end
+    end
+    puts 'done.'
+  end
+
+  def get_hash_array(uri_str, regexp, name_list)
+    html = open(uri_str).read
+    lines = parse_html(html)
+    list = Array.new
+    lines.each do |line|
+      if regexp =~ line then
+        hash = Hash.new
+        i = 1
+        name_list.each do |name|
+          hash[name.to_sym] = Regexp.last_match(i)
+          i += 1
+        end
+        if block_given? then
+          if yield(hash) then
+            list.push(hash)
+          end
+        else
+          list.push(hash)
+        end
+      end
+    end
+    list
+  end
+
+  def match(src_str, str_array)
+    begin
+      str_array.each do |str|
+        reg = Regexp.new(str, Regexp::IGNORECASE)
+        unless reg =~ src_str then
+          raise 'not matched.'
+        end
+      end
+      true
+    rescue
+      false
+    end
+  end
+    
+  def parse_html(html_str)
+    body = html_str.gsub(/[\r\n]/, "")
+    lines = body.scan(/<[^!][^<]*?\/>/)
+    lines += body.scan(/<[^!\/].*?>.*?<\/.*?>/)
+    # pp lines
+  end
+
+  def progress_bar(i, max = 100)
+    i = max if i > max
+    rest_size = 1 + 5 + 1      # space + progress_num + %
+    bar_width = 79 - rest_size # (width - 1) - rest_size = 72
+    percent = i * 100.0 / max
+    bar_length = i * bar_width.to_f / max
+    bar_str = ('#' * bar_length).ljust(bar_width)
+    #  bar_str = '%-*s' % [bar_width, ('#' * bar_length)]
+    progress_num = '%3.1f' % percent
+    STDERR.print "\r#{bar_str} #{'%5s' % progress_num}%"
+    STDERR.flush
+  end
+end
+
+main = Anitube.new
+main.run
