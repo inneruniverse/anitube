@@ -4,12 +4,13 @@
 =begin
 =end
 
+require 'uri'
 require 'open-uri'
 require 'pp'
 require 'optparse'
 
 class Anitube
-  Version = '1.0.0'
+  Version = '1.0.1'
   Usage = [
     "anitube [options] searchword [searchwords..]\n",
     "anitube is listup get uris. if you want to get mpeg, add -g option."]
@@ -71,7 +72,7 @@ class Anitube
 
     # get mpeg
     mpeg_array.each do |target|
-      title = target[:title].gsub(/[:\s]+/, '-')
+      title = target[:title].gsub(/[;:\s]+/, '-')
       unless @args[:noprompt] then
         print "Do you get a #{title} from #{target[:url]}? [y/n] "
         input = STDIN.gets
@@ -167,7 +168,8 @@ class Anitube
   end
 
   def get_hash_array(uri_str, regexp, name_list)
-    html = open(uri_str).read
+    uri_escape = URI.escape(uri_str)
+    html = open(uri_escape).read
     lines = parse_html(html)
     list = Array.new
     lines.each do |line|
