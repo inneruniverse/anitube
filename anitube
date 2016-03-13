@@ -6,6 +6,7 @@
 
 require 'uri'
 require 'open-uri'
+require 'net/http'
 require 'pp'
 require 'optparse'
 
@@ -15,6 +16,10 @@ class Anitube
     "anitube [options] searchword [searchwords..]\n",
     "anitube is listup get uris. if you want to get mpeg, add -g option."]
   SearchUrl = 'http://www.anitube.se/search/?search_id='
+  UserAgent = 'Wget/1.16.3 (msys)'
+  Accept = '*/*'
+  AcceptEncoding = 'identity'
+
 
   def showUsage
     puts "#{self.class.name} version #{Version}"
@@ -39,33 +44,43 @@ class Anitube
     parser.banner=(usage)
     parser.on('-g', '--get', 'get mpeg from showing urls.'){|v| @args[:get] = v}
     parser.on('-v', '--verbose', 'show a log of executing.'){|v| @args[:verbose] = v}
-    parser.on('-y', '--noprompt', 'anser "yse" all prompts.'){|v| @args[:noprompt] = v}
+    parser.on('-y', '--noprompt', 'anser "yes" all prompts.'){|v| @args[:noprompt] = v}
     parser.parse!(ARGV)
     @words = ARGV.dup
     @search_url = SearchUrl
     STDOUT.sync=(true)
+    @opt = {}
+    @opt['User-Agent'] = UserAgent
+    @opt['Accept'] = Accept
+    @opt['Accept-Encoding'] = AcceptEncoding
   end
 
   def run
+    Net::HTTP.version_1_2
+    
     set_search_url
     if @args[:verbose] then
       puts "connect to \"#{@search_url}\"..."
     end
+
+    uri = URI.parse(@search_url)
+    http = Net::HTTP.start(uri.host, uri.port)
     search = Array.new(1, {url: @search_url})
-    search += get_search_uri(@search_url, @words)
+    search += get_search_uri(http, @search_url, @words)
     list = Array.new
     search.each do |src|
       if @args[:verbose] then
         puts "search url is \"#{src[:url]}\""
       end
-      list += make_list(src[:url], @words)
+      list += make_list(http, src[:url], @words)
     end
     list.uniq!
     mpeg_array = Array.new
     list.each do |target|
-      mpeg_array += search_mpeg(target)
+      mpeg_array += search_mpeg(http, target)
     end
     pp mpeg_array
+    http.finish
     unless @args[:get] then
       exit 0
     end
@@ -93,9 +108,9 @@ class Anitube
     end
   end
 
-  def get_search_uri(uri_str, argvs)
+  def get_search_uri(http, uri_str, argvs)
     name = ['url']
-    search = get_hash_array(uri_str, %r|a\s+href="(http://.*/search/.*/\?sort=&.*)"|i, name) do |hash|
+    search = get_hash_array(http, uri_str, %r|a\s+href="(http://.*/search/.*/\?sort=&.*)"|i, name) do |hash|
       if match(hash[:url], argvs) then
         true
       else
@@ -105,9 +120,9 @@ class Anitube
     search.uniq
   end  
 
-  def make_list(uri_str, argvs)
+  def make_list(http, uri_str, argvs)
     name = ['url', 'title']
-    list = get_hash_array(uri_str, %r|<a\s+href="(http://.*?)">\s*(.*)\s*</a>|i, name) do |hash|
+    list = get_hash_array(http, uri_str, %r|<a\s+href="(http://.*?)">\s*(.*)\s*</a>|i, name) do |hash|
       title = hash[:title]
       if %r|<.*/>| !~ title and match(title, argvs) then
         true
@@ -118,16 +133,16 @@ class Anitube
     list
   end
 
-  def search_mpeg(target_hash)
+  def search_mpeg(http, target_hash)
     name = ['url']
-    config = get_hash_array(target_hash[:url], %r|"(http://.*?config.php.*?)"|i, name)
+    config = get_hash_array(http, target_hash[:url], %r|"(http://.*?config.php.*?)"|i, name)
     result_array = Array.new
     config.each do |target|
       if target[:url] then
         if @args[:verbose] then
           puts "#{target_hash[:title]} is #{target[:url]}."
         end
-        html = open(target[:url]).read
+        html = get_body(http, target[:url])
         src = String.new
         html.each_line do |line|
           if %r|(http://.*?\.mp4)|i =~ line then
@@ -167,9 +182,9 @@ class Anitube
     puts 'done.'
   end
 
-  def get_hash_array(uri_str, regexp, name_list)
+  def get_hash_array(http, uri_str, regexp, name_list)
     uri_escape = URI.escape(uri_str)
-    html = open(uri_escape).read
+    html = get_body(http, uri_escape)
     lines = parse_html(html)
     list = Array.new
     lines.each do |line|
@@ -190,6 +205,28 @@ class Anitube
       end
     end
     list
+  end
+
+  def get_body(http, uri_string)
+    uri = URI.parse(uri_string)
+    get_string = uri.path
+    get_string << '?' + uri.query if uri.query
+    req = Net::HTTP::Get.new(get_string)
+    res = http.request(req)
+    unless res.code == '200' then
+      10.times do
+        sleep(2)
+        res = http.request(req)
+        break if res.code == '200'
+        if @args[:verbose] then
+          puts "request code is #{res.code}."
+        end
+      end
+      unless res.code == '200' then
+        pp res
+      end
+    end
+    res.body
   end
 
   def match(src_str, str_array)
